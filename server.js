@@ -7,27 +7,18 @@ const { URL } = require('url');
 
 const NUM_WORKERS = parseInt(process.env.WORKERS || os.cpus().length, 10);
 const SELF_URL = process.env.SELF_URL || '';
-const KEEPALIVE_INTERVAL_MS = parseInt(
-  process.env.KEEPALIVE_INTERVAL_MS || '840000',
-  10
-); // 14 minutes = 840000 ms
+const KEEPALIVE_INTERVAL_MS = parseInt(process.env.KEEPALIVE_INTERVAL_MS || '840000', 10); // 14 mins
 
-// ═══════════════════════════════════════════════════════════════════
-// MASTER PROCESS
-// ═══════════════════════════════════════════════════════════════════
 if (cluster.isPrimary) {
   console.log(`[Master ${process.pid}] spawning ${NUM_WORKERS} workers`);
   cluster.schedulingPolicy = cluster.SCHED_RR;
 
-  // Shared registry (master owns it)
-  // streamId -> { streamId, workerId, deviceName, createdAt, viewers }
-  const registry = new Map();
+  const registry = new Map(); // streamId -> { streamId, workerId, deviceName, createdAt, viewers }
 
   for (let i = 0; i < NUM_WORKERS; i++) cluster.fork();
 
   for (const id in cluster.workers) {
     const worker = cluster.workers[id];
-
     worker.on('message', (msg) => {
       if (msg.type === 'register-stream') {
         registry.set(msg.streamId, {
@@ -63,37 +54,22 @@ if (cluster.isPrimary) {
     cluster.fork();
   });
 
-  // ═══════════════════════════════════════════════════════════════════
-  // 🔥 SELF-TRIGGER / KEEP-ALIVE — Render ko 14 min me ping karta hai
-  // ═══════════════════════════════════════════════════════════════════
+  // 🔥 SELF-TRIGGER (Render ko active rakhne ke liye)
   if (SELF_URL) {
-    console.log(`[KeepAlive] will ping ${SELF_URL}/api/health every ${KEEPALIVE_INTERVAL_MS}ms`);
-
     const ping = () => {
       try {
         const url = new URL('/api/health', SELF_URL);
         const client = url.protocol === 'https:' ? https : http;
-        const req = client.get(
-          url,
-          { timeout: 20000, headers: { 'User-Agent': 'RenderKeepAlive/1.0' } },
-          (res) => {
-            res.resume();
-            console.log(`[KeepAlive] ${new Date().toISOString()} → ${res.statusCode}`);
-          }
-        );
-        req.on('timeout', () => { req.destroy(); console.warn('[KeepAlive] timeout'); });
+        const req = client.get(url, { timeout: 20000 }, (res) => {
+          res.resume();
+          console.log(`[KeepAlive] ping → ${res.statusCode}`);
+        });
+        req.on('timeout', () => req.destroy());
         req.on('error', (err) => console.warn('[KeepAlive] error:', err.message));
-      } catch (err) {
-        console.warn('[KeepAlive] failed:', err.message);
-      }
+      } catch (err) {}
     };
-
-    // Pehla ping 30 sec baad (server warm hone do)
     setTimeout(ping, 30000);
-    // Uske baad har 14 minutes
     setInterval(ping, KEEPALIVE_INTERVAL_MS);
-  } else {
-    console.log('[KeepAlive] disabled (SELF_URL not set)');
   }
 } else {
   require('./worker');
